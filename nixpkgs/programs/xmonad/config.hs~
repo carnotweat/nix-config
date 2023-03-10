@@ -1,0 +1,231 @@
+--
+-- The available layouts.  Note that each layout is separated by |||,
+-- which denotes layout choice.
+--
+myLayout =
+  avoidStruts
+    . smartBorders
+    . fullScreenToggle
+    . comLayout
+    . devLayout
+    . webLayout
+    . demoLayout
+    . wrkLayout $ (tiled ||| Mirror tiled ||| column3 ||| full)
+   where
+     -- default tiling algorithm partitions the screen into two panes
+     tiled   = gapSpaced 10 $ Tall nmaster delta ratio
+     full    = gapSpaced 5 Full
+     column3 = gapSpaced 10 $ ThreeColMid 1 (3/100) (1/2)
+     grid'   = gapSpaced 10 $ Grid
+
+     -- The default number of windows in the master pane
+     nmaster = 1
+
+     -- Default proportion of screen occupied by master pane
+     ratio   = 1/2
+
+     -- Percent of screen to increment by when resizing panes
+     delta   = 3/100
+
+     -- Gaps bewteen windows
+     myGaps gap  = gaps [(U, gap),(D, gap),(L, gap),(R, gap)]
+     gapSpaced g = spacing g . myGaps g
+
+     -- Per workspace layout
+     comLayout = onWorkspace comWs (full ||| tiled)
+     devLayout = onWorkspace devWs (column3 ||| full)
+     webLayout = onWorkspace webWs (tiled ||| full)
+     wrkLayout = onWorkspace wrkWs (tiled ||| full)
+     demoLayout = onWorkspace demoWs (grid' ||| full)
+
+     -- Fullscreen
+     fullScreenToggle = mkToggle (single NBFULL)
+
+------------------------------------------------------------------------
+-- Window rules:
+
+-- Execute arbitrary actions and WindowSet manipulations when managing
+-- a new window. You can use this to, for example, always float a
+-- particular program, or have a client always appear on a particular
+-- workspace.
+--
+-- To find the property name associated with a program, use
+-- > xprop | grep WM_CLASS
+-- and click on the client you're interested in.
+--
+-- To match on the WM_NAME, you can use 'title' in the same way that
+-- 'className' and 'resource' are used below.
+--
+
+type AppName      = String
+type AppTitle     = String
+type AppClassName = String
+type AppCommand   = String
+
+data App
+  = ClassApp AppClassName AppCommand
+  | TitleApp AppTitle AppCommand
+  | NameApp AppName AppCommand
+  deriving Show
+
+audacious = ClassApp "Audacious"            "audacious"
+btm       = TitleApp "btm"                  "alacritty -t btm -e btm --color gruvbox --default_widget_type proc"
+calendar  = ClassApp "Orage"                "orage"
+eog       = NameApp  "eog"                  "eog"
+evince    = ClassApp "Evince"               "evince"
+gimp      = ClassApp "Gimp"                 "gimp"
+nautilus  = ClassApp "Org.gnome.Nautilus"   "nautilus"
+office    = ClassApp "libreoffice-draw"     "libreoffice-draw"
+pavuctrl  = ClassApp "Pavucontrol"          "pavucontrol"
+scr       = ClassApp "SimpleScreenRecorder" "simplescreenrecorder"
+spotify   = ClassApp "Spotify"              "spotify"
+vlc       = ClassApp "Vlc"                  "vlc"
+
+myManageHook = manageApps <+> manageSpawn <+> manageScratchpads
+ where
+  isBrowserDialog     = isDialog <&&> className =? "Brave-browser"
+  isFileChooserDialog = isRole =? "GtkFileChooserDialog"
+  isPopup             = isRole =? "pop-up"
+  isSplash            = isInProperty "_NET_WM_WINDOW_TYPE" "_NET_WM_WINDOW_TYPE_SPLASH"
+  isRole              = stringProperty "WM_WINDOW_ROLE"
+  tileBelow           = insertPosition Below Newer
+  doCalendarFloat   = customFloating (W.RationalRect (11 / 15) (1 / 48) (1 / 4) (1 / 8))
+  manageScratchpads = namedScratchpadManageHook scratchpads
+  anyOf :: [Query Bool] -> Query Bool
+  anyOf = foldl (<||>) (pure False)
+  match :: [App] -> Query Bool
+  match = anyOf . fmap isInstance
+  manageApps = composeOne
+    [ isInstance calendar                 -?> doCalendarFloat
+    , match [ gimp, office ]              -?> doFloat
+    , match [ audacious
+            , eog
+            , nautilus
+            , pavuctrl
+            , scr
+            ]                             -?> doCenterFloat
+    , match [ btm, evince, spotify, vlc ] -?> doFullFloat
+    , resource =? "desktop_window"        -?> doIgnore
+    , resource =? "kdesktop"              -?> doIgnore
+    , anyOf [ isBrowserDialog
+            , isFileChooserDialog
+            , isDialog
+            , isPopup
+            , isSplash
+            ]                             -?> doCenterFloat
+    , isFullscreen                        -?> doFullFloat
+    , pure True                           -?> tileBelow
+    ]
+
+isInstance (ClassApp c _) = className =? c
+isInstance (TitleApp t _) = title =? t
+isInstance (NameApp n _)  = appName =? n
+
+getNameCommand (ClassApp n c) = (n, c)
+getNameCommand (TitleApp n c) = (n, c)
+getNameCommand (NameApp  n c) = (n, c)
+
+getAppName    = fst . getNameCommand
+getAppCommand = snd . getNameCommand
+
+scratchpadApp :: App -> NamedScratchpad
+scratchpadApp app = NS (getAppName app) (getAppCommand app) (isInstance app) defaultFloating
+
+runScratchpadApp = namedScratchpadAction scratchpads . getAppName
+
+scratchpads = scratchpadApp <$> [ audacious, btm, nautilus, scr, spotify ]
+
+------------------------------------------------------------------------
+-- Workspaces
+--
+webWs = "web"
+ossWs = "oss"
+devWs = "dev"
+comWs = "com"
+wrkWs = "wrk"
+sxmWs = "sxm"
+fbkWs = "fbk"
+demoWs = "demo"
+
+myWS :: [WorkspaceId]
+myWS = [webWs, ossWs, devWs, comWs, wrkWs, sxmWs, fbkWs, demoWs]
+
+------------------------------------------------------------------------
+-- Dynamic Projects
+--
+projects :: [Project]
+projects =
+  [ Project { projectName      = webWs
+            , projectDirectory = "~/"
+            , projectStartHook = Just $ spawn "firefox -P 'default'"
+            }
+  , Project { projectName      = ossWs
+            , projectDirectory = "~/workspace/nix-config"
+            , projectStartHook = Just $ do spawn (terminalWithCommand "neofetch")
+                                           spawn (terminalWithCommand "duf")
+                                           spawn myTerminal
+            }
+  , Project { projectName      = devWs
+            , projectDirectory = "~/workspace/trading"
+            , projectStartHook = Just . replicateM_ 8 $ spawn myTerminal
+            }
+  , Project { projectName      = comWs
+            , projectDirectory = "~/"
+            , projectStartHook = Just $ do spawn "telegram-desktop"
+                                           spawn "signal-desktop"
+            }
+  , Project { projectName      = wrkWs
+            , projectDirectory = "~/"
+            , projectStartHook = Just $ spawn "firefox -P 'sxm'"
+            }
+  , Project { projectName      = sxmWs
+            , projectDirectory = "~/workspace/sxm"
+            , projectStartHook = Just . replicateM_ 3 $ spawn myTerminal
+            }
+  , Project { projectName      = fbkWs
+            , projectDirectory = "~/workspace/feda"
+            , projectStartHook = Just . replicateM_ 2 $ spawn myTerminal
+            }
+  , Project { projectName      = demoWs
+            , projectDirectory = "~/"
+            , projectStartHook = Just $ do spawn (terminalWithCommand "htop")
+                                           spawn (terminalWithCommand "neofetch")
+                                           spawn (terminalWithCommand "btm")
+                                           spawn (terminalWithCommand "duf")
+                                           spawn (terminalWithCommand "nyancat")
+                                           spawn (terminalWithCommand "ranger --selectfile ~/workspace/nix-config/imgs/amd.jpg")
+            }
+  ]
+
+terminalWithCommand :: String -> String
+terminalWithCommand cmd = "alacritty -o shell.program=fish -o shell.args=['-C " <> cmd <> "']"
+
+
+projectsTheme :: XPConfig
+projectsTheme = amberXPConfig
+  { bgHLight = "#002b36"
+  , font     = "xft:Bitstream Vera Sans Mono:size=8:antialias=true"
+  , height   = 50
+  , position = CenteredAt 0.5 0.5
+  }
+
+------------------------------------------------------------------------
+-- Event handling
+
+-- * EwmhDesktops users should change this to ewmhDesktopsEventHook
+--
+-- Defines a custom handler function for X Events. The function should
+-- return (All True) if the default handler is to be run afterwards. To
+-- combine event hooks use mappend or mconcat from Data.Monoid.
+--
+-- NOTE: the (docks . ewmh . ewmhFullscreen) defined in main already overrides handleEventHook
+--
+-- myEventHook = docksEventHook <+> ewmhDesktopsEventHook <+> fullscreenEventHook
+
+------------------------------------------------------------------------
+-- Status bars and logging
+
+-- Perform an arbitrary action on each internal state change or X event.
+-- See the 'XMonad.Hooks.DynamicLog' extension for examples.
+--
+myLogHook = fadeInactiveLogHook 0.9
